@@ -239,11 +239,10 @@ async function selecionarVeiculo(frame, modelo) {
   await gatilho.click({ position: { x: 24, y: 14 } });
   await pausa(300, 600);
   const opcao = gatilho
-    .locator('label.credere-form-field-sublabel')
-    .filter({ has: frame.locator(`input[value="${escolhida}"]`) })
+    .locator(`label.credere-form-field-sublabel:has(input[value="${escolhida}"])`)
     .first();
   await opcao.scrollIntoViewIfNeeded().catch(() => {});
-  await opcao.click();
+  await opcao.click({ timeout: 15000 });
   await pausa(1200, 2200); // o formulário pode abrir campos novos depois da escolha
   return escolhida;
 }
@@ -267,12 +266,12 @@ async function escolherOpcao(fs, texto) {
   const gatilho = fs.locator('div.credere-form-field-input').first();
   await gatilho.click({ position: { x: 24, y: 14 } });
   await pausa(300, 600);
+  const alvo = String(texto).replace(/"/g, '\\"');
   const opcao = fs
-    .locator('label.credere-form-field-sublabel')
-    .filter({ has: fs.locator(`input[value-label="${texto}"]`) })
+    .locator(`label.credere-form-field-sublabel:has(input[value-label="${alvo}"])`)
     .first();
   await opcao.scrollIntoViewIfNeeded().catch(() => {});
-  await opcao.click();
+  await opcao.click({ timeout: 15000 });
   await pausa(600, 1200);
 }
 
