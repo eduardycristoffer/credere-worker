@@ -38,6 +38,24 @@ app.post('/discover', exigirAuth, async (req, res) => {
   return res.json(r);
 });
 
+// Teste: abre o formulário, escolhe a moto e preenche os campos, mas NÃO envia a simulação.
+// Corpo: { loja_slug, lead:{nome,cpf,telefone}, veiculo:{modelo,valor}, entrada }
+app.post('/testar', exigirAuth, async (req, res) => {
+  const { loja_slug: lojaSlug, lead = {}, veiculo = {}, entrada } = req.body || {};
+  const conta = contaDaLoja(lojaSlug);
+  if (!conta) return res.status(400).json({ erro: 'loja_sem_conta' });
+  const dados = {
+    nome: lead.nome,
+    cpf: soDigitos(lead.cpf),
+    telefone: soDigitos(lead.telefone),
+    modelo: veiculo.modelo,
+    valor_veiculo: veiculo.valor,
+    entrada,
+  };
+  const r = await simular({ conta, dados, dryRun: true });
+  return res.json(r);
+});
+
 // Lead -> Credere. Responde 202 e devolve o resultado via callback.
 app.post('/simular', exigirAuth, (req, res) => {
   const { analise_id: analiseId, loja_slug: lojaSlug, lead = {}, veiculo = {}, entrada } = req.body || {};
@@ -56,6 +74,7 @@ app.post('/simular', exigirAuth, (req, res) => {
     telefone: soDigitos(lead.telefone),
     email: lead.email,
     renda: lead.renda,
+    modelo: veiculo.modelo,
     valor_veiculo: veiculo.valor,
     entrada,
   };

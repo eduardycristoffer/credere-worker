@@ -36,3 +36,7 @@ Rode `/discover` com a conta de uma loja para ajustar.
 
 ## Deploy
 Railway com Dockerfile na raiz; healthcheck em `/health`.
+
+## Teste sem enviar
+`POST /testar` (auth) abre o formulário, escolhe a moto e preenche os campos **sem enviar** a simulação.
+Corpo: `{"loja_slug":"...","lead":{"nome":"...","cpf":"...","telefone":"..."},"veiculo":{"modelo":"JET 125","valor":12000},"entrada":4800}`.

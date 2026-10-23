@@ -6,18 +6,28 @@ const RESULT_TIMEOUT = Number(process.env.RESULT_TIMEOUT_MS || 120000);
 const pausa = (min, max) =>
   new Promise((r) => setTimeout(r, min + Math.random() * (max - min)));
 
-// Rótulos candidatos de cada campo do formulário (dentro do iframe do embed).
-// v0: ajustar depois de rodar /discover e ver os rótulos reais.
+// Campos do formulário "Nova simulação". Os de seletor fixo foram confirmados no HTML real
+// (lead[cpf_cnpj], lead[name], lead[phone_number]). Os demais usam rótulo estimado e são
+// opcionais: se não existirem, aparecem em campos_nao_encontrados.
+// Loja, vendedor e placa ficam como estão (fixos / ignorados).
 const CAMPOS = [
-  { chave: 'nome', rotulos: [/nome/i], obrigatorio: true },
-  { chave: 'cpf', rotulos: [/cpf/i], obrigatorio: true },
-  { chave: 'data_nascimento', rotulos: [/nascimento/i], obrigatorio: false },
-  { chave: 'telefone', rotulos: [/celular|telefone/i], obrigatorio: false },
-  { chave: 'email', rotulos: [/e-?mail/i], obrigatorio: false },
-  { chave: 'renda', rotulos: [/renda|sal[aá]rio/i], obrigatorio: false },
-  { chave: 'valor_veiculo', rotulos: [/valor do (ve[ií]culo|bem)|valor/i], obrigatorio: true },
-  { chave: 'entrada', rotulos: [/entrada/i], obrigatorio: false },
+  { chave: 'cpf', seletores: ['input[name="lead[cpf_cnpj]"]'], obrigatorio: true },
+  { chave: 'nome', seletores: ['input[name="lead[name]"]'], obrigatorio: true },
+  { chave: 'telefone', seletores: ['input[name="lead[phone_number]"]'], obrigatorio: true },
+  {
+    chave: 'valor_veiculo',
+    seletores: ['input[name*="asset_value"]', 'input[name*="[value]"]'],
+    rotulos: [/valor d[oa] (ve[ií]culo|bem|moto)/i],
+    obrigatorio: false,
+    moeda: true,
+  },
+  { chave: 'entrada', seletores: ['input[name*="down_payment"]', 'input[name*="entry"]'], rotulos: [/entrada/i], obrigatorio: false, moeda: true },
+  { chave: 'data_nascimento', seletores: ['input[name*="birth"]'], rotulos: [/nascimento/i], obrigatorio: false },
+  { chave: 'email', seletores: ['input[name="lead[email]"]'], rotulos: [/e-?mail/i], obrigatorio: false },
+  { chave: 'renda', seletores: ['input[name*="income"]'], rotulos: [/renda|sal[aá]rio/i], obrigatorio: false, moeda: true },
 ];
+
+const CAMPO_VEICULO = 'simulation[vehicle][name]';
 
 export function mascararTexto(t) {
   return String(t || '')
@@ -134,11 +144,11 @@ async function abrirFormulario(page) {
   while (!alvo && Date.now() < limite) {
     const filho = page.frames().find((f) => f !== page.mainFrame() && /meucredere/.test(f.url()));
     try {
-      if (filho && (await filho.locator('input, select').count())) alvo = filho;
+      if (filho && (await filho.locator('input[name="lead[cpf_cnpj]"]').count())) alvo = filho;
     } catch {
       /* frame ainda carregando */
     }
-    if (!alvo && (await page.locator('#credere-embed-app input, #credere-embed-app select').count())) {
+    if (!alvo && (await page.locator('input[name="lead[cpf_cnpj]"]').count())) {
       alvo = page;
     }
     if (!alvo) await page.waitForTimeout(1000);
@@ -150,8 +160,12 @@ async function abrirFormulario(page) {
   return alvo;
 }
 
-async function localizar(frame, rotulos) {
-  for (const r of rotulos) {
+async function localizar(frame, campo) {
+  for (const s of campo.seletores || []) {
+    const el = frame.locator(s).first();
+    if (await el.count()) return el;
+  }
+  for (const r of campo.rotulos || []) {
     const porLabel = frame.getByLabel(r).first();
     if (await porLabel.count()) return porLabel;
     const porPlaceholder = frame.getByPlaceholder(r).first();
@@ -160,18 +174,21 @@ async function localizar(frame, rotulos) {
   return null;
 }
 
-function valorTexto(chave, dados) {
-  const v = dados[chave];
+function valorTexto(campo, dados) {
+  const v = dados[campo.chave];
   if (v === undefined || v === null || v === '') return null;
+  if (campo.moeda && typeof v === 'number') {
+    return v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
   return String(v);
 }
 
 async function preencher(frame, dados) {
   const naoEncontrados = [];
   for (const campo of CAMPOS) {
-    const valor = valorTexto(campo.chave, dados);
+    const valor = valorTexto(campo, dados);
     if (valor === null) continue;
-    const el = await localizar(frame, campo.rotulos);
+    const el = await localizar(frame, campo);
     if (!el) {
       naoEncontrados.push(campo.chave);
       continue;
@@ -183,6 +200,52 @@ async function preencher(frame, dados) {
     await pausa(250, 700);
   }
   return naoEncontrados;
+}
+
+const normaliza = (s) =>
+  String(s || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^A-Z0-9+ ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+// "JET 125" -> "SHINERAY - JET 125"; "SHI 175s EFI" -> "SHINERAY - SHI" (maior nome contido).
+export function escolherOpcaoVeiculo(opcoes, modelo) {
+  const alvo = normaliza(modelo);
+  if (!alvo) return null;
+  const lista = opcoes.map((v) => ({ v, n: normaliza(v.replace(/^\s*SHINERAY\s*-\s*/i, '')) }));
+  const exato = lista.find((o) => o.n === alvo);
+  if (exato) return exato.v;
+  const contidos = lista
+    .filter((o) => o.n && ` ${alvo} `.includes(` ${o.n} `))
+    .sort((a, b) => b.n.length - a.n.length);
+  return contidos.length ? contidos[0].v : null;
+}
+
+async function selecionarVeiculo(frame, modelo) {
+  const gatilho = frame
+    .locator(`div.credere-form-field-input:has(input[name="${CAMPO_VEICULO}"])`)
+    .first();
+  await gatilho.waitFor({ state: 'visible' });
+  const opcoes = await frame
+    .locator(`input[name="${CAMPO_VEICULO}"]`)
+    .evaluateAll((els) => els.map((e) => e.value));
+  const escolhida = escolherOpcaoVeiculo(opcoes, modelo);
+  if (!escolhida) {
+    throw Object.assign(new Error('veiculo_nao_encontrado'), { codigo: 'veiculo_nao_encontrado' });
+  }
+  await gatilho.click({ position: { x: 24, y: 14 } });
+  await pausa(300, 600);
+  const opcao = gatilho
+    .locator('label.credere-form-field-sublabel')
+    .filter({ has: frame.locator(`input[value="${escolhida}"]`) })
+    .first();
+  await opcao.scrollIntoViewIfNeeded().catch(() => {});
+  await opcao.click();
+  await pausa(1200, 2200); // o formulário pode abrir campos novos depois da escolha
+  return escolhida;
 }
 
 async function textoDeTodosFrames(page) {
@@ -240,11 +303,13 @@ async function aguardarResultado(page) {
   return ultimo;
 }
 
-export async function simular({ conta, dados }) {
+// dryRun: preenche o formulário e confere os campos, mas NÃO envia a simulação.
+export async function simular({ conta, dados, dryRun = false }) {
   const { browser, page } = await abrirNavegador();
   try {
     await login(page, conta);
     const frame = await abrirFormulario(page);
+    const veiculo = await selecionarVeiculo(frame, dados.modelo);
     const faltando = await preencher(frame, dados);
     const obrigatoriosFaltando = CAMPOS.filter(
       (c) => c.obrigatorio && faltando.includes(c.chave),
@@ -260,7 +325,32 @@ export async function simular({ conta, dados }) {
     const botao = frame
       .getByRole('button', { name: /simular|calcular|enviar|continuar|consultar/i })
       .first();
-    if (!(await botao.count())) {
+    const temBotao = (await botao.count()) > 0;
+
+    if (dryRun) {
+      const lidos = {};
+      for (const campo of CAMPOS) {
+        const el = await localizar(frame, campo);
+        lidos[campo.chave] = el
+          ? campo.chave === 'cpf' || campo.chave === 'telefone'
+            ? `${(await el.inputValue()).length} caracteres`
+            : await el.inputValue()
+          : null;
+      }
+      const botoes = await frame
+        .locator('button, [role="button"]')
+        .evaluateAll((bs) => bs.map((b) => (b.innerText || '').trim()).filter(Boolean).slice(0, 15));
+      return {
+        status: 'preenchido',
+        veiculo_escolhido: veiculo,
+        campos_lidos: lidos,
+        campos_nao_encontrados: faltando,
+        botao_enviar_encontrado: temBotao,
+        botoes,
+      };
+    }
+
+    if (!temBotao) {
       return { status: 'erro', motivo: 'botao_nao_encontrado', campos_nao_encontrados: faltando };
     }
     await botao.click();
@@ -277,7 +367,12 @@ export async function simular({ conta, dados }) {
     };
   } catch (e) {
     console.error(`[simular] erro: ${detalheErro(e)}`);
-    return { status: 'erro', motivo: e.codigo || 'falha_inesperada' };
+    const r = { status: 'erro', motivo: e.codigo || 'falha_inesperada' };
+    if (dryRun) {
+      r.detalhe = detalheErro(e);
+      r.diag = await diagnostico(page).catch(() => null);
+    }
+    return r;
   } finally {
     await browser.close().catch(() => {});
   }
