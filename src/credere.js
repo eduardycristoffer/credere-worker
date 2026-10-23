@@ -70,12 +70,20 @@ async function login(page, conta) {
 
 async function abrirFormulario(page) {
   await page.goto(`${BASE}/simulations/new`, { waitUntil: 'domcontentloaded' });
-  const handle = await page.waitForSelector('#credere-initializer-iframe', { timeout: 30000 });
-  const frame = await handle.contentFrame();
-  if (!frame) throw Object.assign(new Error('frame_indisponivel'), { codigo: 'formulario_mudou' });
-  await frame.waitForSelector('input, select', { timeout: 30000 });
+  // O formulário é um app embutido em #credere-embed-app: renderiza direto na página
+  // (ou, em outras versões, dentro de um iframe). Os dois casos são tratados.
+  await page.waitForSelector('#credere-embed-app, #credere-initializer-iframe', { timeout: 30000 });
+  const handle = await page.$('#credere-initializer-iframe');
+  let alvo = page;
+  if (handle) {
+    alvo = await handle.contentFrame();
+    if (!alvo) throw Object.assign(new Error('frame_indisponivel'), { codigo: 'formulario_mudou' });
+    await alvo.waitForSelector('input, select', { timeout: 45000 });
+  } else {
+    await page.waitForSelector('#credere-embed-app input, #credere-embed-app select', { timeout: 45000 });
+  }
   await pausa(800, 1500);
-  return frame;
+  return alvo;
 }
 
 async function localizar(frame, rotulos) {
@@ -226,7 +234,8 @@ export async function descobrir({ conta }) {
         const pai = el.closest('label');
         return pai ? pai.innerText.trim() : null;
       };
-      return Array.from(document.querySelectorAll('input, select, textarea')).map((el) => ({
+      const raiz = document.querySelector('#credere-embed-app') || document;
+      return Array.from(raiz.querySelectorAll('input, select, textarea')).map((el) => ({
         tag: el.tagName.toLowerCase(),
         type: el.type || null,
         name: el.name || null,
@@ -238,13 +247,13 @@ export async function descobrir({ conta }) {
       }));
     });
     const botoes = await frame.evaluate(() =>
-      Array.from(document.querySelectorAll('button, [role="button"]'))
+      Array.from((document.querySelector('#credere-embed-app') || document).querySelectorAll('button, [role="button"]'))
         .map((b) => b.innerText.trim())
         .filter(Boolean)
         .slice(0, 40),
     );
     const titulos = await frame.evaluate(() =>
-      Array.from(document.querySelectorAll('h1,h2,h3,legend,label'))
+      Array.from((document.querySelector('#credere-embed-app') || document).querySelectorAll('h1,h2,h3,legend,label'))
         .map((e) => e.innerText.trim())
         .filter(Boolean)
         .slice(0, 80),
@@ -253,7 +262,13 @@ export async function descobrir({ conta }) {
   } catch (e) {
     console.error(`[discover] erro: ${detalheErro(e)}`);
     // Na descoberta não há dado de cliente, então o detalhe técnico pode voltar.
-    return { status: 'erro', motivo: e.codigo || 'falha_inesperada', detalhe: detalheErro(e) };
+    let pagina = null;
+    try {
+      pagina = new URL(page.url()).pathname; // só o caminho, sem parâmetros
+    } catch {
+      /* sem página */
+    }
+    return { status: 'erro', motivo: e.codigo || 'falha_inesperada', detalhe: detalheErro(e), pagina };
   } finally {
     await browser.close().catch(() => {});
   }
