@@ -33,3 +33,6 @@ Chave `default` serve de fallback. Loja sem conta devolve `erro/loja_sem_conta`.
 ## Status
 v0: os rótulos dos campos em `src/credere.js` (`CAMPOS`) e a leitura do resultado são estimados.
 Rode `/discover` com a conta de uma loja para ajustar.
+
+## Deploy
+Railway com Dockerfile na raiz; healthcheck em `/health`.
