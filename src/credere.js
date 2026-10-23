@@ -488,6 +488,15 @@ export async function simular({ conta, dados, dryRun = false }) {
 
     // O embed avisa o portal, que redireciona para /simulations/<uuid>
     await page.waitForURL(/\/simulations\/[0-9a-f-]{8,}/i, { timeout: 60000 }).catch(() => {});
+    if (/\/simulations\/new/.test(new URL(page.url()).pathname)) {
+      // Continua no formulário: a Credere recusou o envio. Devolve os campos com erro.
+      const estado = await estadoFormulario(frame).catch(() => []);
+      return {
+        status: 'erro',
+        motivo: 'formulario_invalido',
+        campos_com_erro: estado.filter((c) => c.erro).map((c) => ({ campo: c.campo, erro: c.erro })),
+      };
+    }
     const texto = await aguardarResultado(page);
     const { geral, bancos } = interpretar(texto);
     return {

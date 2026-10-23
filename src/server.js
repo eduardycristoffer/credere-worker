@@ -55,7 +55,10 @@ app.post('/testar', exigirAuth, async (req, res) => {
     valor_veiculo: veiculo.valor,
     entrada,
   };
-  const r = await simular({ conta, dados, dryRun: true });
+  // Só envia de verdade (consulta os bancos) se vier "enviar": true no corpo.
+  const enviar = req.body?.enviar === true;
+  console.log(`[testar] loja=${lojaSlug} cpf=${mascCpf(dados.cpf)} enviar=${enviar}`);
+  const r = await simular({ conta, dados, dryRun: !enviar });
   return res.json(r);
 });
 
