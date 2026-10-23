@@ -42,7 +42,62 @@ async function abrirNavegador() {
   });
   const page = await context.newPage();
   page.setDefaultTimeout(30000);
+
+  // Registro leve para diagnóstico (só host/caminho, sem parâmetros e sem dados de cliente)
+  const logs = { console: [], falhas: [] };
+  const hp = (u) => {
+    try {
+      const x = new URL(u);
+      return x.host + x.pathname;
+    } catch {
+      return String(u).slice(0, 60);
+    }
+  };
+  page.__logs = logs;
+  page.on('console', (m) => {
+    if (m.type() === 'error' && logs.console.length < 8) logs.console.push(m.text().slice(0, 160));
+  });
+  page.on('pageerror', (e) => {
+    if (logs.console.length < 8) logs.console.push(`pageerror: ${String(e.message).slice(0, 160)}`);
+  });
+  page.on('requestfailed', (r) => {
+    if (logs.falhas.length < 10) logs.falhas.push(`${hp(r.url())} ${r.failure()?.errorText || ''}`);
+  });
+  page.on('response', (r) => {
+    if (r.status() >= 400 && logs.falhas.length < 10) logs.falhas.push(`${r.status()} ${hp(r.url())}`);
+  });
   return { browser, page };
+}
+
+async function diagnostico(page) {
+  const d = { logs: page.__logs };
+  try {
+    d.frames = page.frames().map((f) => {
+      try {
+        const x = new URL(f.url());
+        return x.host + x.pathname;
+      } catch {
+        return String(f.url()).slice(0, 60);
+      }
+    });
+  } catch {
+    /* sem frames */
+  }
+  try {
+    d.embed = await page.evaluate(() => {
+      const e = document.querySelector('#credere-embed-app');
+      if (!e) return null;
+      return {
+        filhos: e.children.length,
+        inputs: e.querySelectorAll('input,select').length,
+        iframes: e.querySelectorAll('iframe').length,
+        texto: (e.innerText || '').slice(0, 300),
+      };
+    });
+  } catch {
+    /* página fechada */
+  }
+  return d;
 }
 
 async function login(page, conta) {
@@ -72,15 +127,24 @@ async function abrirFormulario(page) {
   await page.goto(`${BASE}/simulations/new`, { waitUntil: 'domcontentloaded' });
   // O formulário é um app embutido em #credere-embed-app: renderiza direto na página
   // (ou, em outras versões, dentro de um iframe). Os dois casos são tratados.
-  await page.waitForSelector('#credere-embed-app, #credere-initializer-iframe', { timeout: 30000 });
-  const handle = await page.$('#credere-initializer-iframe');
-  let alvo = page;
-  if (handle) {
-    alvo = await handle.contentFrame();
-    if (!alvo) throw Object.assign(new Error('frame_indisponivel'), { codigo: 'formulario_mudou' });
-    await alvo.waitForSelector('input, select', { timeout: 45000 });
-  } else {
-    await page.waitForSelector('#credere-embed-app input, #credere-embed-app select', { timeout: 45000 });
+  await page.waitForSelector('#credere-embed-app', { timeout: 30000 });
+  // O app embutido pode criar um iframe depois do load, ou renderizar direto na página.
+  const limite = Date.now() + 60000;
+  let alvo = null;
+  while (!alvo && Date.now() < limite) {
+    const filho = page.frames().find((f) => f !== page.mainFrame() && /meucredere/.test(f.url()));
+    try {
+      if (filho && (await filho.locator('input, select').count())) alvo = filho;
+    } catch {
+      /* frame ainda carregando */
+    }
+    if (!alvo && (await page.locator('#credere-embed-app input, #credere-embed-app select').count())) {
+      alvo = page;
+    }
+    if (!alvo) await page.waitForTimeout(1000);
+  }
+  if (!alvo) {
+    throw Object.assign(new Error('formulario_nao_carregou'), { codigo: 'formulario_mudou' });
   }
   await pausa(800, 1500);
   return alvo;
@@ -268,7 +332,8 @@ export async function descobrir({ conta }) {
     } catch {
       /* sem página */
     }
-    return { status: 'erro', motivo: e.codigo || 'falha_inesperada', detalhe: detalheErro(e), pagina };
+    const diag = await diagnostico(page).catch(() => null);
+    return { status: 'erro', motivo: e.codigo || 'falha_inesperada', detalhe: detalheErro(e), pagina, diag };
   } finally {
     await browser.close().catch(() => {});
   }
