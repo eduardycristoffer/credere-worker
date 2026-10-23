@@ -248,6 +248,135 @@ async function selecionarVeiculo(frame, modelo) {
   return escolhida;
 }
 
+// ---- Campos do veículo que dependem da escolha (anos, modelo, novo, uso comercial) ----
+
+function campoPorLegenda(frame, regex) {
+  return frame
+    .locator('fieldset.credere-form-field')
+    .filter({ has: frame.locator('.credere-form-field-legend', { hasText: regex }) })
+    .first();
+}
+
+async function opcoesDoSelect(fs) {
+  return fs
+    .locator('input.credere-form-field-subinput')
+    .evaluateAll((els) => els.map((e) => e.getAttribute('value-label') || e.value));
+}
+
+async function escolherOpcao(fs, texto) {
+  const gatilho = fs.locator('div.credere-form-field-input').first();
+  await gatilho.click({ position: { x: 24, y: 14 } });
+  await pausa(300, 600);
+  const opcao = fs
+    .locator('label.credere-form-field-sublabel')
+    .filter({ has: fs.locator(`input[value-label="${texto}"]`) })
+    .first();
+  await opcao.scrollIntoViewIfNeeded().catch(() => {});
+  await opcao.click();
+  await pausa(600, 1200);
+}
+
+// Espera as opções carregarem (o modelo só aparece depois de escolher os anos).
+async function aguardarOpcoes(fs, ms = 15000) {
+  const limite = Date.now() + ms;
+  while (Date.now() < limite) {
+    const o = await opcoesDoSelect(fs).catch(() => []);
+    if (o.length) return o;
+    await pausa(500, 800);
+  }
+  return [];
+}
+
+function anoDesejado(opcoes, desejado) {
+  const nums = opcoes.map((o) => Number(String(o).replace(/\D/g, ''))).filter(Boolean);
+  if (!nums.length) return null;
+  const exato = opcoes.find((o) => Number(String(o).replace(/\D/g, '')) === desejado);
+  if (exato) return exato;
+  const maior = Math.max(...nums);
+  return opcoes.find((o) => Number(String(o).replace(/\D/g, '')) === maior);
+}
+
+function melhorModelo(opcoes, modelo) {
+  const alvo = new Set(normaliza(modelo).split(' ').filter(Boolean));
+  let melhor = null;
+  let pontos = -1;
+  for (const o of opcoes) {
+    const toks = normaliza(o).split(' ').filter(Boolean);
+    const p = toks.filter((t) => alvo.has(t)).length;
+    if (p > pontos) {
+      pontos = p;
+      melhor = o;
+    }
+  }
+  return melhor || opcoes[0] || null;
+}
+
+async function marcarSimNao(frame, regex, sim) {
+  const fs = campoPorLegenda(frame, regex);
+  if (!(await fs.count())) return false;
+  await fs.getByText(sim ? 'Sim' : 'Não', { exact: true }).first().click();
+  await pausa(400, 900);
+  return true;
+}
+
+async function preencherVeiculo(frame, dados) {
+  const feito = {};
+  const anoAtual = new Date().getFullYear();
+  const anoFab = Number(dados.ano_fabricacao) || anoAtual;
+  const anoMod = Number(dados.ano_modelo) || anoFab;
+
+  const fsFab = campoPorLegenda(frame, /Ano de fabrica/i);
+  if (await fsFab.count()) {
+    const op = anoDesejado(await aguardarOpcoes(fsFab, 8000), anoFab);
+    if (op) {
+      await escolherOpcao(fsFab, op);
+      feito.ano_fabricacao = op;
+    }
+  }
+  const fsMod = campoPorLegenda(frame, /Ano do modelo/i);
+  if (await fsMod.count()) {
+    const op = anoDesejado(await aguardarOpcoes(fsMod, 8000), anoMod);
+    if (op) {
+      await escolherOpcao(fsMod, op);
+      feito.ano_modelo = op;
+    }
+  }
+  const fsModelo = campoPorLegenda(frame, /Modelo do ve/i);
+  if (await fsModelo.count()) {
+    const op = melhorModelo(await aguardarOpcoes(fsModelo, 20000), dados.modelo);
+    if (op) {
+      await escolherOpcao(fsModelo, op);
+      feito.modelo_do_veiculo = op;
+    }
+  }
+  feito.veiculo_novo = await marcarSimNao(frame, /Ve[ií]culo novo/i, dados.zero_km !== false);
+  feito.uso_comercial = await marcarSimNao(frame, /uso comercial/i, false);
+  return feito;
+}
+
+// Foto do estado do formulário: cada campo, se está preenchido e se há mensagem de erro.
+async function estadoFormulario(frame) {
+  return frame.locator('fieldset.credere-form-field').evaluateAll((fs) =>
+    fs.map((f) => {
+      const legenda = (f.querySelector('.credere-form-field-legend')?.innerText || '')
+        .replace(/\*/g, '')
+        .trim()
+        .slice(0, 50);
+      const ehSelect = !!f.querySelector('.credere-form-field-select');
+      const texto = ehSelect
+        ? (f.querySelector('.credere-form-field-input')?.innerText || '').trim().slice(0, 60)
+        : null;
+      const input = f.querySelector('input:not([type=radio])');
+      const erro = (f.querySelector('.credere-form-field-invalidation')?.innerText || '').trim();
+      return {
+        campo: legenda,
+        valor: ehSelect ? texto : input ? (input.value ? 'preenchido' : 'vazio') : 'opção',
+        erro: erro || undefined,
+      };
+    }),
+  );
+}
+
 async function textoDeTodosFrames(page) {
   const partes = [];
   for (const f of page.frames()) {
@@ -310,6 +439,7 @@ export async function simular({ conta, dados, dryRun = false }) {
     await login(page, conta);
     const frame = await abrirFormulario(page);
     const veiculo = await selecionarVeiculo(frame, dados.modelo);
+    const detalhesVeiculo = await preencherVeiculo(frame, dados);
     const faltando = await preencher(frame, dados);
     const obrigatoriosFaltando = CAMPOS.filter(
       (c) => c.obrigatorio && faltando.includes(c.chave),
@@ -323,7 +453,7 @@ export async function simular({ conta, dados, dryRun = false }) {
     }
 
     const botao = frame
-      .getByRole('button', { name: /simular|calcular|enviar|continuar|consultar/i })
+      .getByRole('button', { name: /fazer simula[cç][aã]o|simular/i })
       .first();
     const temBotao = (await botao.count()) > 0;
 
@@ -343,6 +473,8 @@ export async function simular({ conta, dados, dryRun = false }) {
       return {
         status: 'preenchido',
         veiculo_escolhido: veiculo,
+        veiculo_detalhes: detalhesVeiculo,
+        formulario: await estadoFormulario(frame),
         campos_lidos: lidos,
         campos_nao_encontrados: faltando,
         botao_enviar_encontrado: temBotao,

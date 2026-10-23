@@ -49,6 +49,9 @@ app.post('/testar', exigirAuth, async (req, res) => {
     cpf: soDigitos(lead.cpf),
     telefone: soDigitos(lead.telefone),
     modelo: veiculo.modelo,
+    ano_fabricacao: veiculo.ano_fabricacao,
+    ano_modelo: veiculo.ano_modelo,
+    zero_km: veiculo.zero_km,
     valor_veiculo: veiculo.valor,
     entrada,
   };
@@ -75,6 +78,9 @@ app.post('/simular', exigirAuth, (req, res) => {
     email: lead.email,
     renda: lead.renda,
     modelo: veiculo.modelo,
+    ano_fabricacao: veiculo.ano_fabricacao,
+    ano_modelo: veiculo.ano_modelo,
+    zero_km: veiculo.zero_km,
     valor_veiculo: veiculo.valor,
     entrada,
   };
