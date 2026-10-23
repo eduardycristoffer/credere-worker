@@ -418,27 +418,46 @@ async function textoDeTodosFrames(page) {
 }
 
 const BANCOS = [
-  'Banco PAN', 'PAN', 'Bradesco', 'Santander', 'Itaú', 'Itau', 'BV', 'Omni', 'Safra',
+  'Banco PAN', 'PAN', 'C6', 'C6 Bank', 'Bradesco', 'Santander', 'Itaú', 'Itau', 'BV', 'Omni', 'Safra',
   'Banco do Brasil', 'Facta', 'Creditas', 'Honda', 'Yamaha', 'Daycoval', 'Mercantil', 'Sicredi',
 ];
 
-function interpretar(texto) {
+const semAcento = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+const NOMES_BANCOS = new Map(BANCOS.map((b) => [semAcento(b), b]));
+const FIM_BLOCO = /^(cadastrar proposta|compartilhar no whatsapp|alterar dados da simula)/i;
+
+// A página de resultado lista cada banco numa linha, seguido da situação dele.
+export function interpretar(texto) {
   const linhas = texto.split('\n').map((l) => l.trim()).filter(Boolean);
   const bancos = [];
-  linhas.forEach((l, i) => {
-    const banco = BANCOS.find((b) => new RegExp(`\\b${b}\\b`, 'i').test(l));
-    if (!banco) return;
-    const contexto = [l, linhas[i + 1] || '', linhas[i + 2] || ''].join(' | ');
+  for (let i = 0; i < linhas.length; i += 1) {
+    const banco = NOMES_BANCOS.get(semAcento(linhas[i]));
+    if (!banco) continue;
+    const bloco = [];
+    for (let j = i + 1; j < linhas.length && bloco.length < 6; j += 1) {
+      if (NOMES_BANCOS.has(semAcento(linhas[j])) || FIM_BLOCO.test(linhas[j])) break;
+      bloco.push(linhas[j]);
+    }
+    const ctx = semAcento(bloco.join(' | '));
     let status = 'indefinido';
-    if (/aprovad|pr[eé]-?aprovad/i.test(contexto)) status = 'aprovado';
-    else if (/recusad|negad|reprovad|n[aã]o aprovad/i.test(contexto)) status = 'recusado';
-    else if (/an[aá]lise|pendente|aguardando/i.test(contexto)) status = 'em_analise';
-    bancos.push({ banco, status, trecho: mascararTexto(contexto).slice(0, 240) });
-  });
+    if (/sem chance|sem condic|pre-?recusad|recusad|negad|reprovad|nao aprovad/.test(ctx)) status = 'recusado';
+    else if (/aprovad|pre-?aprov|r\$/.test(ctx)) status = 'aprovado';
+    else if (/analise|pendente|aguardando/.test(ctx)) status = 'em_analise';
+    bancos.push({ banco, status, trecho: mascararTexto(bloco.join(' | ')).slice(0, 240) });
+  }
   const aprovado = bancos.some((b) => b.status === 'aprovado');
   const todosRecusados = bancos.length > 0 && bancos.every((b) => b.status === 'recusado');
-  const geral = aprovado ? 'com_proposta' : todosRecusados ? 'sem_proposta' : 'indefinido';
+  const avisoTodos = /pre-?recusad.*todos os bancos|sem condic.*todos os bancos/.test(semAcento(texto));
+  const geral = aprovado ? 'com_proposta' : todosRecusados || (avisoTodos && !bancos.length) ? 'sem_proposta' : 'indefinido';
   return { geral, bancos };
+}
+
+// Só a parte do resultado (sem menu e notificações).
+export function recortarResultado(texto) {
+  const i = texto.indexOf('\nResultado\n');
+  const j = texto.indexOf('\nNotifica', i > -1 ? i : 0);
+  const base = i > -1 ? texto.slice(i + 1) : texto;
+  return j > -1 && i > -1 ? texto.slice(i + 1, j) : base;
 }
 
 async function aguardarResultado(page) {
@@ -538,7 +557,7 @@ export async function simular({ conta, dados: dadosBrutos, dryRun = false }) {
       status: geral,
       bancos,
       campos_nao_encontrados: faltando,
-      resumo: mascararTexto(texto).slice(0, 3000),
+      resumo: mascararTexto(recortarResultado(texto)).slice(0, 3000),
     };
   } catch (e) {
     console.error(`[simular] erro: ${detalheErro(e)}`);
