@@ -25,6 +25,11 @@ export function mascararTexto(t) {
     .replace(/\(?\d{2}\)?\s?9?\d{4}-?\d{4}/g, '(**) *****-****');
 }
 
+// Só a primeira linha do erro (sem o "call log" do Playwright), para diagnóstico.
+function detalheErro(e) {
+  return String(e?.message || e).split('\n')[0].slice(0, 300);
+}
+
 async function abrirNavegador() {
   const browser = await chromium.launch({
     headless: true,
@@ -199,6 +204,7 @@ export async function simular({ conta, dados }) {
       resumo: mascararTexto(texto).slice(0, 3000),
     };
   } catch (e) {
+    console.error(`[simular] erro: ${detalheErro(e)}`);
     return { status: 'erro', motivo: e.codigo || 'falha_inesperada' };
   } finally {
     await browser.close().catch(() => {});
@@ -245,7 +251,9 @@ export async function descobrir({ conta }) {
     );
     return { status: 'ok', campos, botoes, titulos };
   } catch (e) {
-    return { status: 'erro', motivo: e.codigo || 'falha_inesperada' };
+    console.error(`[discover] erro: ${detalheErro(e)}`);
+    // Na descoberta não há dado de cliente, então o detalhe técnico pode voltar.
+    return { status: 'erro', motivo: e.codigo || 'falha_inesperada', detalhe: detalheErro(e) };
   } finally {
     await browser.close().catch(() => {});
   }
