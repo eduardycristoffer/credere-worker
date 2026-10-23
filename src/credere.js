@@ -22,8 +22,8 @@ const CAMPOS = [
     moeda: true,
   },
   { chave: 'entrada', seletores: ['input[name*="down_payment"]', 'input[name*="entry"]'], rotulos: [/entrada/i], obrigatorio: false, moeda: true },
-  { chave: 'data_nascimento', seletores: ['input[name*="birth"]'], rotulos: [/nascimento/i], obrigatorio: false },
-  { chave: 'email', seletores: ['input[name="lead[email]"]'], rotulos: [/e-?mail/i], obrigatorio: false },
+  { chave: 'data_nascimento', seletores: ['input[name*="birth"]'], rotulos: [/nascimento/i], obrigatorio: true },
+  { chave: 'email', seletores: ['input[name="lead[email]"]'], rotulos: [/e-?mail/i], obrigatorio: true },
   { chave: 'renda', seletores: ['input[name*="income"]'], rotulos: [/renda|sal[aá]rio/i], obrigatorio: false, moeda: true },
 ];
 
@@ -353,6 +353,35 @@ async function preencherVeiculo(frame, dados) {
   return feito;
 }
 
+// "1990-05-17" ou "17/05/1990" ou "17051990" -> "17/05/1990" (null se não der para entender)
+export function formatarData(v) {
+  const s = String(v || '').trim();
+  if (!s) return null;
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  m = s.match(/^(\d{2})\D?(\d{2})\D?(\d{4})$/);
+  if (m) return `${m[1]}/${m[2]}/${m[3]}`;
+  return null;
+}
+
+// Campos que a Credere exige para enviar e que o lead precisa trazer.
+export function dadosFaltando(dados) {
+  const f = [];
+  if (!dados.cpf) f.push('cpf');
+  if (!dados.nome) f.push('nome');
+  if (!dados.telefone) f.push('telefone');
+  if (!dados.data_nascimento) f.push('data_nascimento');
+  if (!dados.email) f.push('email');
+  return f;
+}
+
+async function preencherCliente(frame, dados) {
+  // A Credere pergunta se o cliente tem CNH; por padrão "Sim" (pode vir carteira_motorista:false).
+  return {
+    carteira_motorista: await marcarSimNao(frame, /Carteira de motorista/i, dados.carteira_motorista !== false),
+  };
+}
+
 // Foto do estado do formulário: cada campo, se está preenchido e se há mensagem de erro.
 async function estadoFormulario(frame) {
   return frame.locator('fieldset.credere-form-field').evaluateAll((fs) =>
@@ -432,7 +461,12 @@ async function aguardarResultado(page) {
 }
 
 // dryRun: preenche o formulário e confere os campos, mas NÃO envia a simulação.
-export async function simular({ conta, dados, dryRun = false }) {
+export async function simular({ conta, dados: dadosBrutos, dryRun = false }) {
+  const dados = { ...dadosBrutos, data_nascimento: formatarData(dadosBrutos.data_nascimento) };
+  if (!dryRun) {
+    const falta = dadosFaltando(dados);
+    if (falta.length) return { status: 'erro', motivo: 'dados_incompletos', campos_faltando: falta };
+  }
   const { browser, page } = await abrirNavegador();
   try {
     await login(page, conta);
@@ -440,6 +474,7 @@ export async function simular({ conta, dados, dryRun = false }) {
     const veiculo = await selecionarVeiculo(frame, dados.modelo);
     const detalhesVeiculo = await preencherVeiculo(frame, dados);
     const faltando = await preencher(frame, dados);
+    Object.assign(detalhesVeiculo, await preencherCliente(frame, dados));
     const obrigatoriosFaltando = CAMPOS.filter(
       (c) => c.obrigatorio && faltando.includes(c.chave),
     ).map((c) => c.chave);
